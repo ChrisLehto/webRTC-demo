@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# local certs / secrets
+*.pem
+*.key
+*.crt
+.env
+
+# runtime output (snapshots)
+capture/
+captures/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+*.log

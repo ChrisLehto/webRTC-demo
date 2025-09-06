@@ -1,0 +1,157 @@
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Homeowner</title>
+    </head>
+    <body>
+        <h1>Homeowner</h1>
+        <p id="room"></p>
+
+        <div>
+            <button id="join">Join Session</button>
+            <button id="enableAudio">Enable Audio</button>
+        </div>
+
+        <h3>Your camera (local preview)</h3>
+        <video id="local" autoplay playsinline muted></video>
+
+        <audio id="remoteAudio" autoplay></audio>
+
+        <pre id="log"></pre>
+
+        <script>
+            const q = new URLSearchParams(location.search);
+            const roomId = q.get('room');
+            const log = (m) => (document.getElementById('log').textContent += m + '\n');
+            
+            document.getElementById('room').textContent = roomId ? `Room: ${roomId}` : 'No room id in URL';
+
+            const localVideo = document.getElementById('local');
+            const remoteAudio = document.getElementById('remoteAudio');
+            remoteAudio.muted = true;
+
+            let ws, pc, localStream;
+            let pendingCandidates = [];
+
+            const wsSend = (obj) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(obj));
+
+            function makePC() {
+                pc = new RTCPeerConnection({
+                    iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+                    //TURN Later
+                });
+
+                pc.onicecandidate = (e) => {
+                    if(e.candidate){
+                        wsSend({type:'signal', roomId, data: {ice: e.candidate}});
+                    }
+                };
+
+                pc.ontrack = (ev) => {
+                    if(ev.track.kind === 'audio'){
+                        remoteAudio.srcObject = ev.streams[0];
+                        remoteAudio.play().catch(() => {});
+                        log('Remote audio received.')
+                    }
+                };
+
+                pc.onconnectionstatechange = () => log('PC state: ' + pc.connectionState);
+                pc.oniceconnectionstatechange = () => log('ICE state: ' + pc.iceConnectionState);
+            }
+
+            async function startLocal(){
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: {ideal: 'environment'}, width: {ideal: 1200}},
+                    audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}
+                });
+                
+                localVideo.srcObject = localStream;
+
+                for (const track of localStream.getTracks()){
+                    pc.addTrack(track,localStream);
+                }
+                log('Local tracks added.');
+            }
+
+            document.getElementById('enableAudio').onclick = () => {
+                remoteAudio.muted = false;
+                remoteAudio.play().catch(() => {});
+                log('Tried to enable remote audio playback.');
+            };
+
+            document.getElementById('join').onclick = async () => {
+                if(!roomId)
+                    return alert('Missing room id.');
+
+                const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+
+                ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+                ws.onopen = () => {
+                    ws.send(JSON.stringify({type:'join', roomId, role:'homeowner'}));
+                }
+
+                ws.onmessage = async (ev) => {
+                    const msg = JSON.parse(ev.data);
+
+                    if(msg.type === 'joined')
+                        log(`Joined as ${msg.role}`);
+                    if(msg.type === 'peer-ready')
+                        log(`Peer present: ${msg.peer}`);
+                    
+                    if(msg.type === 'signal'){
+                        if(msg.data?.sdp) {
+
+                            const desc = msg.data.sdp;
+
+                            if(!pc) 
+                                makePC();
+                            if(!localStream)
+                                await startLocal();
+
+                            await pc.setRemoteDescription(desc);
+
+                            for(const c of pendingCandidates){
+                                try{
+                                    await pc.addIceCandidate(c);
+                                }catch(e){
+                                    log('queued ICE error: ' + e.message);
+                                }   
+                            }
+                            pendingCandidates = [];
+
+                            log('Set remote description (' + desc.type + ').');
+
+                            if(desc.type === 'offer') {
+                                const answer = await pc.createAnswer();
+                                await pc.setLocalDescription(answer);
+                                wsSend({type:'signal', roomId, data: {sdp: pc.localDescription}});
+                                log('Created and sent answer.');
+                            }
+                        }
+
+                        if(msg.data?.ice){
+                            if(pc && pc.RemoteDescription){
+                                try{
+                                    await pc.addIceCandidate(msg.data.ice);
+                                }catch (e){
+                                    log('addIceCandidate error: ' + e.message); 
+                                }
+                            }else{
+                                pendingCandidates.push(msg.data.ice);
+                            }
+                        }
+                    }
+
+                    if(msg.type === 'peer-left')
+                        log(`Peer left: ${msg.peer}`);
+                    if(msg.type === 'error')
+                        log(`Error: ${msg.reason}`);
+                };
+
+                ws.onclose = () => log('Web Socket Closed');
+            };
+        </script>
+    </body>
+</html>

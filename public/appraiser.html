@@ -1,0 +1,233 @@
+<html>
+    <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        <title>Appraiser Console</title>
+    </head>
+        <body>
+            <h1>Appraiser Console</h1>
+            <p id="room"></p>
+
+            <div>
+                <button id="join">Join Session</button>
+                <button id="enableAudio">Enable Audio</button>
+                <button id="snap" disabled>Snap Photo</button>
+            </div>
+
+            <h3>Homeowner Video (remote)</h3>
+            <p id="status"></p>
+            <video id="remoteVideo" autoplay playsinline></video>
+            
+            <canvas id="snapCanvas" style="display:none;"></canvas>
+            <p id="last"></p>
+
+            <pre id="log"></pre>
+
+            <script>
+                const q = new URLSearchParams(location.search);
+                const roomId = q.get('room');
+                const log = (m) => (document.getElementById('log').textContent += m + '\n');
+
+                document.getElementById('room').textContent = roomId ? `Room: ${roomId}` : 'No room id in URL';
+
+                const remoteVideo = document.getElementById('remoteVideo');
+                remoteVideo.muted = true;
+
+                let ws, pc, localStream;
+                let pendingCandidates = [];
+
+                const wsSend = (obj) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(obj));
+                
+                function makePC(){
+                    pc = new RTCPeerConnection({
+                        iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+                        //TURN later
+                    });
+
+                    pc.onicecandidate = (e) => {
+                        if(e.candidate){
+                            wsSend({type:'signal', roomId, data: {ice: e.candidate}});
+                        }
+                    };
+
+                    pc.ontrack = (ev) => {
+                        remoteVideo.srcObject = ev.streams[0];
+
+                        enableSnapWhenReady();
+
+                        remoteVideo.play().catch(() => {});
+
+                        log(`Remote track: ${ev.track.kind}`);
+                    };
+
+                    pc.onconnectionstatechange = () => log('PC state: ' + pc.connectionState);
+                    pc.oniceconnectionstatechange = () => log('ICE state: ' + pc.iceConnectionState);
+                }
+
+                async function startLocal(){
+                    localStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}
+                    });
+
+                    for(const track of localStream.getTracks()){
+                        pc.addTrack(track, localStream);
+                    }
+                    log('Local audio added.');
+                }
+
+                document.getElementById('enableAudio').onclick = () => {
+                    remoteVideo.muted = false;
+                    remoteVideo.play().catch(() => {});
+                    log('Tried to enable remote video and audio playback.');
+                };
+
+                async function beginOfferFlow(){
+                    if(!pc)
+                        makePC();
+                    if(!localStream)
+                        await startLocal();
+
+                    const offer = await pc.createOffer({offerToReceiveAudio: true, offerToReceiveVideo: true});
+                    await pc.setLocalDescription(offer);
+                    wsSend({type:'signal', roomId, data: {sdp: pc.localDescription }});
+                    log('Created and sent offer');
+                }
+
+                document.getElementById('join').onclick = async () => {
+                    if(!roomId)
+                        return alert('Missing room id.');
+
+                        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+
+                        ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+                        ws.onopen = () => {
+                            ws.send(JSON.stringify({type:'join', roomId, role:'appraiser'}));
+                        };
+
+                        ws.onmessage = async (ev) => {
+                            const msg = JSON.parse(ev.data);
+
+                            if(msg.type === 'joined')
+                                log(`Joined as ${msg.role}`);
+
+                            if(msg.type === 'peer-ready'){
+                                log(`Peer present: ${msg.peer}, starting offer flow.`);
+                                await beginOfferFlow();
+                            }
+
+                            if(msg.type === 'signal'){
+                                if(msg.data?.sdp) {
+                                    const desc = msg.data.sdp;
+                                    if(!pc)
+                                        makePC();
+                                    if(!localStream)
+                                        await startLocal();
+
+                                    await pc.setRemoteDescription(desc);
+
+                                    for(const c of pendingCandidates){
+                                        try{
+                                            await pc.addIceCandidate(c);
+                                        }catch(e){
+                                            log('queued ICE error: ' + e.message);
+                                        }
+                                    }
+                                    pendingCandidates = [];
+
+                                    log('Set remote description (' + desc.type + ')');
+
+                                    if(desc.type === 'answer') {
+                                        log('Handshake complete.');
+                                    }
+                                }
+                                if(msg.data?.ice){
+                                    if(pc && pc.setRemoteDescription){
+                                        try{
+                                            await pc.addIceCandidate(msg.data.ice);
+                                        }catch(e){
+                                            log('addIceCandidateError: ' + e.message);
+                                        }
+                                    }else{
+                                        pendingCandidates.push(msg.data.ice);
+                                    }
+                                }
+                            }
+
+                            if(msg.type === 'peer-left')
+                                log(`Peer left: ${msg.peer}`);
+                            if(msg.type === 'error')
+                                log(`Error: ${msg.reason}`);
+                        };
+
+                    ws.onclose = () => log('WS closed');
+                };
+
+                const statusEl = document.getElementById('status');
+                const lastEl = document.getElementById('last');
+                const snapBtn = document.getElementById('snap');
+                const snapCanvas = document.getElementById('snapCanvas');
+                const ctx = snapCanvas.getContext('2d');
+
+                function enableSnapWhenReady() {
+                    const check = () => {
+                        const src = remoteVideo.srcObject;
+                        const tracksReady = src && src.getVideoTracks && src.getVideoTracks().length > 0;
+
+                        if(tracksReady && remoteVideo.videoWidth && remoteVideo.videoHeight) {
+                            snapBtn.disabled = false;
+                            statusEl.textContent = "Remote video is ready to snap photos.";
+                            return true;
+                        }
+                        return false;
+                    };
+                    if(!check()) {
+                        const int = setInterval(() => {
+                            if(check())
+                                clearInterval(int);
+                        }, 300);
+                    }
+                }
+
+                async function snapAndUpload() {
+                    if(!remoteVideo.srcObject){
+                        alert("Remote video not ready yet.");
+                        return;
+                    }
+
+                    const w = remoteVideo.videoWidth || 1200;
+                    const h = remoteVideo.videoHeight || 720;
+                    snapCanvas.width = w;
+                    snapCanvas.height = h;
+                    ctx.drawImage(remoteVideo, 0, 0, w, h);
+
+                    const dataUrl = snapCanvas.toDataURL('image/jpeg');
+                    const base64 = dataUrl.split(',')[1];
+
+                    statusEl.textContent = 'Uploading snapshot...';
+
+                    try {
+                        const r = await fetch('/api/snap', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({roomId, imageBase64: base64})
+                        });
+
+                        const j = await r.json();
+
+                        if(!j.ok) 
+                            throw new Error(j.error || 'upload_failed');
+
+                        statusEl.textContent = 'Saved!';
+                        lastEl.innerHTML = `Last capture <a href="${j.url}" target="_blank" rel="noopener">open image</a>`;
+                    }catch(e){
+                        console.error(e);
+                        statusEl.textContent = 'Upload Failed: ' + e.message;
+                        alert('Upload failed ' + e.message);
+                    }
+                }
+
+                snapBtn.onclick = snapAndUpload;
+            </script>
+        </body>
+</html>

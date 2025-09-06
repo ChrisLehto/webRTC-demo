@@ -1,0 +1,38 @@
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Test</title>
+    </head>
+    <body>
+        <h1>Create a session</h1>
+        <p>Click to create a unique link for the homeowner, then open the appraiser console</p>
+        <button id="create">Create Session</button>
+        <div id="result">
+            <div class="row">
+                <input id="homeLink" type="text" readonly />
+                <button id="copy">Copy</button>
+            </div>
+            <div class="row">
+                <a id="appraiserLink" href="#" target="_blank">
+                    <button>Open Appraiser Console</button>
+                </a>
+            </div>
+            <p class="hint">Share the <strong>Homeowner link</strong> via SMS/Email.</p>
+        </div>
+        <script>
+            const $ = (s) => document.querySelector(s);
+            $('#create').onclick = async () => {
+                const r = await fetch('/api/sessions', {method: 'POST'});
+                const {id, homeownerUrl, appraiserUrl } = await r.json();
+                $('#homeLink').value = homeownerUrl;
+                $('#appraiserLink').href = appraiserUrl;
+                $('#result').style.display = '';
+            };
+            $('#copy').onclick = async () => {
+                await navigator.clipboard.writeText($('#homeLink').value);
+                alert('Homeowner link copied!');
+            };
+        </script>
+    </body>
+</html>

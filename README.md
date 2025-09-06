@@ -1,0 +1,1 @@
+Node.js + WebRTC app for 1-way video, 2-way audio, with snapshot capture.
