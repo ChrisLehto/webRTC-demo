@@ -5,6 +5,7 @@ const https = require('https');
 const {WebSocketServer} = require('ws');
 const crypto = require('crypto');
 const multer = require('multer');
+const {exiftool} = require("exiftool-vendored");
 
 const app = express();
 app.use(express.json({limit: '25mb'}));
