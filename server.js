@@ -4,6 +4,7 @@ const express = require('express');
 const https = require('https');
 const {WebSocketServer} = require('ws');
 const crypto = require('crypto');
+const multer = require('multer');
 
 const app = express();
 app.use(express.json({limit: '25mb'}));
@@ -13,6 +14,25 @@ const captureDir = path.join(__dirname, 'capture');
 
 if(!fs.existsSync(captureDir))
     fs.mkdirSync(captureDir);
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const roomId = req.query.roomId || "default";
+        const dir = path.join(captureDir, roomId);
+
+        if(!fs.existsSync(dir)){
+            fs.mkdirSync(dir, {recursive: true});
+        }
+
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        cb(null, `${ts}.jpg`);
+    }
+});
+
+const upload = multer({storage});
 
 app.use('/captures', express.static(captureDir));
 
@@ -40,24 +60,6 @@ app.post('/api/sessions', (req, res) => {
     const appraiserUrl = `${proto}://${host}/appraiser.html?room=${id}`;
 
     res.json({id, homeownerUrl, appraiserUrl});
-});
-
-app.post('/api/snap', (req, res) => {
-    try{
-        const{roomId, imageBase64} = req.body || {};
-        if(!roomId || !imageBase64){
-            return res.status(400).json({ok: false, error: 'roomId and imageBase64 required'}); 
-        }
-        const buf = Buffer.from(imageBase64, 'base64');
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        const filename = `capture-${roomId}-${ts}.jpg`;
-        
-        fs.writeFileSync(path.join(captureDir, filename), buf);
-        return res.json({ok: true, url: `/captures/${filename}`, filename});
-    }catch(e){
-        console.error('snap error', e);
-        return res.status(500).json({ok: false, error: 'internal_error'});
-    }
 });
 
 const wss = new WebSocketServer({server, path: '/ws'});
@@ -128,6 +130,35 @@ wss.on('connection', (ws) => {
             }
             return;
         }
+
+        if(msg.type === "capture_request"){
+            const {roomId} = msg;
+            const room = rooms.get(roomId);
+
+            if(!room)
+                return;
+
+            const buddy = getBuddy(room, ws.meta.role);
+
+            if(buddy && buddy.readyState === buddy.OPEN){
+                buddy.send(JSON.stringify({type: 'capture_request'}));
+            }
+            return;
+        }
+
+        if(msg.type === "photo_uploaded"){
+            const {roomId} = msg;
+            const room = rooms.get(roomId);
+            
+            if(!room)
+                return;
+
+            const buddy = getBuddy(room, ws.meta.role);
+
+            if(buddy && buddy.readyState === buddy.OPEN){
+                buddy.send(JSON.stringify({type: "photo_uploaded"}));
+            }
+        }
     });
 
     ws.on('close', () => {
@@ -152,8 +183,34 @@ wss.on('connection', (ws) => {
 
         if(!room.homeowner && !room.appraiser) 
             rooms.delete(roomId);
+
+        const dir = path.join(captureDir, roomId);
+
+        if(fs.existsSync(dir)){
+            fs.rmSync(dir, {recursive: true, force: true});
+            console.log("Cleaned up: ", dir);
+        }
     });
 });
+
+app.post("/upload", upload.single("photo"), (req, res) => {
+    const roomId = req.query.roomId || "default";
+    const{latitude, longitude, accuracy} = req.body;
+    const photoUrl = `/captures/${roomId}/${req.file.filename}`;
+
+    console.log("Photo saved:", req.file.path);
+    console.log("Location:", latitude, longitude, "±", accuracy, "m");
+
+    const room = rooms.get(roomId);
+    if(room) {
+        const buddy = getBuddy(room, "homeowner");
+        if(buddy && buddy.readyState === buddy.OPEN){
+            buddy.send(JSON.stringify({type: "photo_uploaded", url: photoUrl}));
+        }
+    }
+
+    res.json({ok: true, url: photoUrl});
+})
 
 server.listen(3000, () => {
     console.log(`Server running at https://192.168.86.100:3000`);
