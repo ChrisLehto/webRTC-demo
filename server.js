@@ -6,6 +6,7 @@ const {WebSocketServer} = require('ws');
 const crypto = require('crypto');
 const multer = require('multer');
 const {exiftool} = require("exiftool-vendored");
+const sharp = require("sharp");
 
 const app = express();
 app.use(express.json({limit: '25mb'}));
@@ -15,6 +16,15 @@ const captureDir = path.join(__dirname, 'capture');
 
 if(!fs.existsSync(captureDir))
     fs.mkdirSync(captureDir);
+
+async function ensureJpeg(photoPath) {
+    const tmpPath = photoPath + ".tmp";
+    await sharp(photoPath)
+        .rotate()
+        .jpeg()
+        .toFile(tmpPath);
+    await fs.promises.rename(tmpPath, photoPath);
+}
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -204,13 +214,15 @@ app.post("/upload", upload.single("photo"), async (req, res) => {
     console.log("Location:", latitude, longitude, "±", accuracy, "m");
 
     try{
+        await ensureJpeg(photoPath);
+
         await exiftool.write(photoPath, {
             GPSLatitude: Math.abs(Number(latitude)),
             GPSLongitude: Math.abs(Number(longitude)),
-            GPSlatitudeRef: latitude >= 0 ? "N" : "S",
+            GPSLatitudeRef: latitude >= 0 ? "N" : "S",
             GPSLongitudeRef: longitude >= 0 ? "E" : "W",
             GPSAccuracy: Number(accuracy)
-        });
+        }, ["-overwrite_original"]);
         console.log("GPS EXIF embedded successfully.")
     }catch(e){
         console.error("Error writing EXIF:", e);
