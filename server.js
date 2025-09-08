@@ -5,6 +5,7 @@ const https = require('https');
 const {WebSocketServer} = require('ws');
 const crypto = require('crypto');
 const multer = require('multer');
+const {exiftool} = require("exiftool-vendored");
 
 const app = express();
 app.use(express.json({limit: '25mb'}));
@@ -193,13 +194,27 @@ wss.on('connection', (ws) => {
     });
 });
 
-app.post("/upload", upload.single("photo"), (req, res) => {
+app.post("/upload", upload.single("photo"), async (req, res) => {
     const roomId = req.query.roomId || "default";
-    const{latitude, longitude, accuracy} = req.body;
+    const {latitude, longitude, accuracy} = req.body;
+    const photoPath = req.file.path;
     const photoUrl = `/captures/${roomId}/${req.file.filename}`;
 
     console.log("Photo saved:", req.file.path);
     console.log("Location:", latitude, longitude, "±", accuracy, "m");
+
+    try{
+        await exiftool.write(photoPath, {
+            GPSLatitude: Math.abs(Number(latitude)),
+            GPSLongitude: Math.abs(Number(longitude)),
+            GPSlatitudeRef: latitude >= 0 ? "N" : "S",
+            GPSLongitudeRef: longitude >= 0 ? "E" : "W",
+            GPSAccuracy: Number(accuracy)
+        });
+        console.log("GPS EXIF embedded successfully.")
+    }catch(e){
+        console.error("Error writing EXIF:", e);
+    }
 
     const room = rooms.get(roomId);
     if(room) {
@@ -210,7 +225,7 @@ app.post("/upload", upload.single("photo"), (req, res) => {
     }
 
     res.json({ok: true, url: photoUrl});
-})
+});
 
 server.listen(3000, () => {
     console.log(`Server running at https://192.168.86.100:3000`);
