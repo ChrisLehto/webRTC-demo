@@ -101,7 +101,6 @@ project-root/
 
 - Add TURN server for reliable NAT traversal.
 - Streamline email invitations.
-- Improve snapshot quality (geo-tagging, EXIF metadata).
 - UI polish for production readiness.
 
 ---
